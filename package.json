@@ -1,0 +1,27 @@
+{
+  "name": "eljuegodetobby",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ercafazz/ElJuegoDeTobby.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/ercafazz/ElJuegoDeTobby/issues"
+  },
+  "homepage": "https://github.com/ercafazz/ElJuegoDeTobby#readme",
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}
