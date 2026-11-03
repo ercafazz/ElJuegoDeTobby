@@ -1470,13 +1470,13 @@ class Game {
     drawAdminScene(ctx, 12, 58, BASE_W - 24, 196, this.time);
     ctx.globalAlpha = alpha;
 
-    drawFittedText(ctx, '¡Tobby no muerde!', BASE_W / 2, 268, 12, BASE_W - 24, '#cfe0ff', {
+    drawFittedText(ctx, '…y en vez de morderte, ¡te lamió!', BASE_W / 2, 268, 12, BASE_W - 24, '#cfe0ff', {
       weight: '600',
     });
 
     // Mensaje navideño (lo más importante)
-    drawFittedText(ctx, 'Tobby les desea', BASE_W / 2, 292, 16, BASE_W - 24, C.white);
-    drawText(ctx, '', BASE_W / 2, 311, 16, C.white);
+    drawFittedText(ctx, 'Tobby y la puerta de Administración', BASE_W / 2, 292, 16, BASE_W - 24, C.white);
+    drawText(ctx, 'les desean', BASE_W / 2, 311, 16, C.white);
     drawText(ctx, '¡Feliz Navidad!', BASE_W / 2, 340, 32, C.red, { stroke: C.white, strokeWidth: 6 });
 
     // Puntuaciones
