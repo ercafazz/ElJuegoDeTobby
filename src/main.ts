@@ -9,7 +9,8 @@
  *  - Toque / clic en la mitad izquierda o derecha → cambiar de carril.
  *  - Deslizar ← / → → cambiar de carril.
  *  - Deslizar ↑ / ↓ → acelerar / frenar (Tobby siempre va ganando terreno).
- *  - Teclado: flechas o WASD, Espacio / Enter para empezar o reiniciar.
+ *  - Teclado: flechas o WASD, Espacio / Enter para empezar o reiniciar, M para silenciar.
+ *  - Botón de sonido en la esquina superior izquierda.
  *
  * Todo se dibuja con primitivas de Canvas sobre una resolución lógica de
  * 320×480 que se escala a la pantalla manteniendo la proporción 2:3.
@@ -271,6 +272,320 @@ const HighScoreStore = {
   },
 };
 
+// ───────────────────────────── Música navideña (Web Audio, sin archivos) ─────────────────────────────
+//
+// La música se sintetiza en tiempo real con osciladores: no hay que descargar nada, lo que
+// mantiene el juego ligero para quien entra escaneando el QR.
+//  - Al iniciar cada partida suena "Jingle Bells" en bucle (se acelera un poco con la dificultad).
+//  - Al llegar el Game Over esa música se detiene y suena una sola vez
+//    "We Wish You a Merry Christmas" mientras aparece el mensaje de Navidad.
+// Ambas melodías son de dominio público.
+
+const MUSIC_MUTED_KEY = 'tobby_music_muted_v1';
+const MUSIC_VOLUME = 0.22;
+const PLAY_GAMEOVER_CAROL = true; // pon false si solo quieres que la música se detenga en el Game Over
+const SCHEDULE_AHEAD = 0.2; // s que se programan por adelantado
+const SCHEDULER_INTERVAL_MS = 30;
+
+type Voice = 'lead' | 'bass' | 'bell';
+
+interface NoteEvent {
+  beat: number;
+  dur: number; // en tiempos (beats)
+  midi: number;
+  voice: Voice;
+}
+
+interface Song {
+  bpm: number;
+  beats: number; // duración total en tiempos
+  events: NoteEvent[];
+}
+
+type NoteList = ReadonlyArray<readonly [number, number]>; // [nota MIDI (0 = silencio), duración en tiempos]
+
+function sequence(voice: Voice, notes: NoteList, startBeat = 0): NoteEvent[] {
+  const out: NoteEvent[] = [];
+  let beat = startBeat;
+  for (const [midi, dur] of notes) {
+    if (midi > 0) out.push({ beat, dur, midi, voice });
+    beat += dur;
+  }
+  return out;
+}
+
+function makeSong(bpm: number, beats: number, ...tracks: NoteEvent[][]): Song {
+  const events: NoteEvent[] = [];
+  for (const t of tracks) events.push(...t);
+  events.sort((a, b) => a.beat - b.beat);
+  return { bpm, beats, events };
+}
+
+/** Bajo "um-pa": fundamental en el tiempo 1 y quinta en el 3 de cada compás de 4/4. */
+function oomPah(roots: readonly number[]): NoteList {
+  const out: [number, number][] = [];
+  for (const r of roots) out.push([r, 1], [0, 1], [r + 7, 1], [0, 1]);
+  return out;
+}
+
+const N = {
+  G2: 43, A2: 45, C3: 48, D3: 50, E3: 52,
+  D4: 62, G4: 67, A4: 69, B4: 71, C5: 72, D5: 74,
+  E5: 76, Fs5: 78, G5: 79, A5: 81, B5: 83, C6: 84,
+} as const;
+
+const JINGLE_BELLS: Song = (() => {
+  const { G4, A4, B4, C5, D5, G2, A2, C3, D3 } = N;
+  const chorusStart: NoteList = [
+    [B4, 1], [B4, 1], [B4, 2],
+    [B4, 1], [B4, 1], [B4, 2],
+    [B4, 1], [D5, 1], [G4, 1.5], [A4, 0.5],
+    [B4, 4],
+    [C5, 1], [C5, 1], [C5, 1.5], [C5, 0.5],
+    [C5, 1], [B4, 1], [B4, 1], [B4, 0.5], [B4, 0.5],
+  ];
+  const melody: NoteList = [
+    ...chorusStart,
+    [B4, 1], [A4, 1], [A4, 1], [B4, 1],
+    [A4, 2], [D5, 2],
+    ...chorusStart,
+    [D5, 1], [D5, 1], [C5, 1], [A4, 1],
+    [G4, 4],
+  ];
+  const bass = oomPah([G2, G2, G2, G2, C3, G2, A2, D3, G2, G2, G2, G2, C3, G2, D3, G2]);
+  const bells: NoteList = Array.from({ length: 64 }, () => [1, 1] as const);
+  return makeSong(168, 64, sequence('lead', melody), sequence('bass', bass), sequence('bell', bells));
+})();
+
+const WE_WISH_YOU: Song = (() => {
+  const { D5, E5, Fs5, G5, A5, B5, C6, G2, A2, C3, D3, E3 } = N;
+  const melody: NoteList = [
+    [D5, 1],
+    [G5, 1], [G5, 0.5], [A5, 0.5], [G5, 0.5], [Fs5, 0.5],
+    [E5, 1], [E5, 1], [E5, 1],
+    [A5, 1], [A5, 0.5], [B5, 0.5], [A5, 0.5], [G5, 0.5],
+    [Fs5, 1], [D5, 1], [D5, 1],
+    [B5, 1], [B5, 0.5], [C6, 0.5], [B5, 0.5], [A5, 0.5],
+    [G5, 1], [E5, 1], [D5, 0.5], [D5, 0.5],
+    [E5, 1], [A5, 1], [Fs5, 1],
+    [G5, 3],
+  ];
+  const roots = [G2, C3, A2, D3, E3, C3, D3, G2];
+  const bass: [number, number][] = roots.map((r, i) => (i === roots.length - 1 ? [r, 3] : [r, 1]));
+  const waltz: [number, number][] = [];
+  for (const [r, d] of bass) {
+    waltz.push([r, 1]);
+    if (d === 1) waltz.push([r + 7, 1], [r + 7, 1]);
+    else waltz.push([0, 2]);
+  }
+  return makeSong(132, 25, sequence('lead', melody), sequence('bass', waltz, 1));
+})();
+
+const MusicMuteStore = {
+  load(): boolean {
+    try {
+      return window.localStorage.getItem(MUSIC_MUTED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  },
+  save(muted: boolean): void {
+    try {
+      window.localStorage.setItem(MUSIC_MUTED_KEY, muted ? '1' : '0');
+    } catch {
+      /* sin almacenamiento */
+    }
+  },
+};
+
+class ChristmasMusic {
+  private ctx: AudioContext | null = null;
+  private master: GainNode | null = null;
+  private noise: AudioBuffer | null = null;
+  private bus: GainNode | null = null;
+  private song: Song | null = null;
+  private loop = false;
+  private eventIndex = 0;
+  private songStart = 0; // instante (s) del tiempo 0 de la vuelta actual
+  private secPerBeat = 0.5;
+  private tempo = 1;
+  private timer: number | null = null;
+  private muted = MusicMuteStore.load();
+
+  constructor() {
+    document.addEventListener('visibilitychange', () => {
+      if (!this.ctx) return;
+      if (document.hidden) void this.ctx.suspend().catch(() => undefined);
+      else void this.ctx.resume().catch(() => undefined);
+    });
+  }
+
+  get isMuted(): boolean {
+    return this.muted;
+  }
+
+  /**
+   * Debe llamarse dentro de un gesto del usuario (toque, clic o tecla):
+   * los navegadores móviles solo permiten iniciar audio así.
+   */
+  unlock(): void {
+    if (!this.ctx) {
+      const w = window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext };
+      const Ctor = w.AudioContext ?? w.webkitAudioContext;
+      if (!Ctor) return;
+      try {
+        this.ctx = new Ctor();
+      } catch {
+        return;
+      }
+      const ctx = this.ctx;
+      this.master = ctx.createGain();
+      this.master.gain.value = this.muted ? 0 : MUSIC_VOLUME;
+      this.master.connect(ctx.destination);
+
+      // Ruido blanco para los cascabeles.
+      const len = Math.floor(ctx.sampleRate * 0.15);
+      this.noise = ctx.createBuffer(1, len, ctx.sampleRate);
+      const data = this.noise.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+
+      // Buffer silencioso: desbloquea el audio en iOS antiguos.
+      const silent = ctx.createBufferSource();
+      silent.buffer = ctx.createBuffer(1, 1, 22050);
+      silent.connect(ctx.destination);
+      silent.start(0);
+    }
+    if (this.ctx.state !== 'running') void this.ctx.resume().catch(() => undefined);
+  }
+
+  toggleMute(): boolean {
+    this.muted = !this.muted;
+    MusicMuteStore.save(this.muted);
+    if (this.ctx && this.master) {
+      this.master.gain.setTargetAtTime(this.muted ? 0 : MUSIC_VOLUME, this.ctx.currentTime, 0.03);
+    }
+    return this.muted;
+  }
+
+  /** Reproduce una canción desde el principio (con fundido de la anterior). */
+  play(song: Song, loop: boolean, delay = 0): void {
+    this.stop();
+    const ctx = this.ctx;
+    if (!ctx || !this.master) return;
+    const bus = ctx.createGain();
+    bus.connect(this.master);
+    this.bus = bus;
+    this.song = song;
+    this.loop = loop;
+    this.eventIndex = 0;
+    this.tempo = 1;
+    this.secPerBeat = 60 / song.bpm;
+    this.songStart = ctx.currentTime + 0.06 + delay;
+    this.timer = window.setInterval(this.schedule, SCHEDULER_INTERVAL_MS);
+    this.schedule();
+  }
+
+  /** Factor de tempo (se aplica al comenzar cada vuelta del bucle). */
+  setTempo(factor: number): void {
+    this.tempo = clamp(factor, 0.5, 2);
+  }
+
+  /** Detiene la música con un fundido corto. */
+  stop(fade = 0.25): void {
+    this.stopTimer();
+    this.song = null;
+    const ctx = this.ctx;
+    const bus = this.bus;
+    this.bus = null;
+    if (!ctx || !bus) return;
+    const t = ctx.currentTime;
+    bus.gain.cancelScheduledValues(t);
+    bus.gain.setValueAtTime(bus.gain.value, t);
+    bus.gain.linearRampToValueAtTime(0, t + fade);
+    window.setTimeout(() => bus.disconnect(), (fade + SCHEDULE_AHEAD + 0.5) * 1000);
+  }
+
+  private stopTimer(): void {
+    if (this.timer !== null) {
+      window.clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  private schedule = (): void => {
+    const ctx = this.ctx;
+    const song = this.song;
+    const bus = this.bus;
+    if (!ctx || !song || !bus) return;
+    const horizon = ctx.currentTime + SCHEDULE_AHEAD;
+    for (;;) {
+      if (this.eventIndex >= song.events.length) {
+        if (!this.loop) {
+          this.stopTimer();
+          return;
+        }
+        this.songStart += song.beats * this.secPerBeat;
+        this.secPerBeat = 60 / (song.bpm * this.tempo);
+        this.eventIndex = 0;
+      }
+      const ev = song.events[this.eventIndex];
+      const t = this.songStart + ev.beat * this.secPerBeat;
+      if (t > horizon) return;
+      if (t >= ctx.currentTime - 0.05) this.playNote(ctx, bus, ev, t, ev.dur * this.secPerBeat);
+      this.eventIndex++;
+    }
+  };
+
+  private playNote(ctx: AudioContext, out: AudioNode, ev: NoteEvent, t: number, dur: number): void {
+    if (ev.voice === 'bell') {
+      if (!this.noise) return;
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise;
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 7000;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(0.28, t + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+      src.connect(hp).connect(g).connect(out);
+      src.start(t);
+      src.stop(t + 0.12);
+      return;
+    }
+
+    const freq = 440 * Math.pow(2, (ev.midi - 69) / 12);
+    const lead = ev.voice === 'lead';
+    const end = t + Math.max(0.09, dur * 0.95);
+
+    const osc = ctx.createOscillator();
+    osc.type = lead ? 'triangle' : 'square';
+    osc.frequency.value = freq;
+    const g = ctx.createGain();
+    const peak = lead ? 0.55 : 0.07;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(peak, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, end);
+    osc.connect(g).connect(out);
+    osc.start(t);
+    osc.stop(end + 0.02);
+
+    if (lead) {
+      // Brillo tipo campanita una octava arriba.
+      const chime = ctx.createOscillator();
+      chime.type = 'sine';
+      chime.frequency.value = freq * 2;
+      const cg = ctx.createGain();
+      cg.gain.setValueAtTime(0.0001, t);
+      cg.gain.linearRampToValueAtTime(0.18, t + 0.006);
+      cg.gain.exponentialRampToValueAtTime(0.0001, t + Math.min(0.35, dur));
+      chime.connect(cg).connect(out);
+      chime.start(t);
+      chime.stop(t + Math.min(0.4, dur + 0.05));
+    }
+  }
+}
+
 // ───────────────────────────── Canvas y escalado ─────────────────────────────
 
 function getCanvas(): HTMLCanvasElement {
@@ -345,9 +660,15 @@ class Viewport {
 // ───────────────────────────── Entrada (táctil, mouse, teclado) ─────────────────────────────
 
 interface InputHandlers {
-  /** Se llama al tocar. Devuelve true si el toque ya se consumió (p. ej. empezar/reiniciar). */
-  onPress(): boolean;
+  /**
+   * Se llama al tocar (coordenadas lógicas; -1 si viene del teclado).
+   * Devuelve true si el toque ya se consumió (empezar/reiniciar o botón de sonido).
+   */
+  onPress(x: number, y: number): boolean;
   onAction(action: Action): void;
+  /** Cualquier gesto del usuario: sirve para desbloquear el audio en móviles. */
+  onUserGesture(): void;
+  onToggleMute(): void;
 }
 
 interface Gesture {
@@ -376,6 +697,8 @@ class InputController {
       if (e.cancelable) e.preventDefault();
     };
     document.addEventListener('touchmove', prevent, { passive: false });
+    // En móviles el audio solo se puede activar en touchend/pointerup (no en pointerdown).
+    document.addEventListener('touchend', this.handlers.onUserGesture, { passive: true });
     document.addEventListener('gesturestart', prevent, { passive: false });
     document.addEventListener('dblclick', prevent, { passive: false });
     document.addEventListener('contextmenu', prevent);
@@ -384,8 +707,9 @@ class InputController {
   private onPointerDown = (e: PointerEvent): void => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     if (e.cancelable) e.preventDefault();
-    const consumed = this.handlers.onPress();
+    this.handlers.onUserGesture();
     const p = this.viewport.toLogical(e.clientX, e.clientY);
+    const consumed = this.handlers.onPress(p.x, p.y);
     this.gestures.set(e.pointerId, {
       startX: e.clientX,
       startY: e.clientY,
@@ -406,6 +730,7 @@ class InputController {
   };
 
   private onPointerUp = (e: PointerEvent): void => {
+    this.handlers.onUserGesture();
     const g = this.gestures.get(e.pointerId);
     this.gestures.delete(e.pointerId);
     if (!g || g.resolved) return;
@@ -425,11 +750,15 @@ class InputController {
       case 'ArrowUp': case 'w': case 'W': action = 'up'; break;
       case 'ArrowDown': case 's': case 'S': action = 'down'; break;
       case ' ': case 'Enter': action = 'primary'; break;
+      case 'm': case 'M':
+        if (!e.repeat) this.handlers.onToggleMute();
+        return;
       default: return;
     }
     e.preventDefault();
     if (e.repeat) return;
-    if (this.handlers.onPress()) return;
+    this.handlers.onUserGesture();
+    if (this.handlers.onPress(-1, -1)) return;
     if (action !== 'primary') this.handlers.onAction(action);
   };
 }
@@ -1140,6 +1469,29 @@ function drawAdminScene(ctx: CanvasRenderingContext2D, x: number, y: number, w: 
   ctx.stroke();
 }
 
+const MUTE_HIT = 44; // zona táctil del botón de sonido (esquina superior izquierda)
+
+/** Botón de sonido: bocina con ondas, o con una X si está silenciado. */
+function drawSoundButton(ctx: CanvasRenderingContext2D, muted: boolean): void {
+  const cx = 21;
+  const cy = 21;
+  fillCircle(ctx, cx, cy, 14, 'rgba(0,0,0,0.38)');
+  fillPolygon(ctx, [cx - 8, cy - 3.5, cx - 4, cy - 3.5, cx + 1, cy - 8, cx + 1, cy + 8, cx - 4, cy + 3.5, cx - 8, cy + 3.5], C.white);
+  if (muted) {
+    strokeLine(ctx, cx + 4, cy - 4, cx + 10, cy + 4, 2.2, '#ff6b6b');
+    strokeLine(ctx, cx + 10, cy - 4, cx + 4, cy + 4, 2.2, '#ff6b6b');
+  } else {
+    ctx.strokeStyle = C.white;
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.arc(cx + 2, cy, 5, -0.9, 0.9);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx + 2, cy, 9, -0.9, 0.9);
+    ctx.stroke();
+  }
+}
+
 // ───────────────────────────── Juego ─────────────────────────────
 
 class Game {
@@ -1163,7 +1515,10 @@ class Game {
   private readonly snow: Snowflake[] = [];
   private readonly nightSky: CanvasGradient;
 
-  constructor(private readonly ctx: CanvasRenderingContext2D) {
+  constructor(
+    private readonly ctx: CanvasRenderingContext2D,
+    private readonly music: ChristmasMusic,
+  ) {
     for (let i = 0; i < 6; i++) this.popups.push({ x: 0, y: 0, life: 0, text: '+1' });
     for (let i = 0; i < 45; i++) {
       this.snow.push({
@@ -1178,8 +1533,12 @@ class Game {
 
   // ── Entrada ──
 
-  /** Toque/clic inicial. Devuelve true si se usó para cambiar de estado. */
-  handlePress(): boolean {
+  /** Toque/clic inicial. Devuelve true si se usó (cambio de estado o botón de sonido). */
+  handlePress(x: number, y: number): boolean {
+    if (x >= 0 && x <= MUTE_HIT && y >= 0 && y <= MUTE_HIT) {
+      this.music.toggleMute();
+      return true;
+    }
     if (this.state === GameState.START) {
       this.startRun();
       return true;
@@ -1218,6 +1577,7 @@ class Game {
     this.tobby.reset();
     this.traffic.reset();
     for (const p of this.popups) p.life = 0;
+    this.music.play(JINGLE_BELLS, true); // música navideña en cada partida nueva
     this.setState(GameState.PLAYING);
   }
 
@@ -1230,6 +1590,10 @@ class Game {
       HighScoreStore.save(this.highScore);
     }
     this.tobby.startCatch(this.player.x, this.player.y);
+    // La música de la partida termina con el Game Over…
+    this.music.stop(0.3);
+    // …y suena el villancico final mientras aparece el mensaje de Navidad.
+    if (PLAY_GAMEOVER_CAROL) this.music.play(WE_WISH_YOU, false, CATCH_ANIM_TIME * 0.8);
     this.setState(GameState.GAMEOVER);
   }
 
@@ -1270,6 +1634,7 @@ class Game {
   private updatePlaying(dt: number): void {
     // Dificultad progresiva
     this.roadSpeed = Math.min(MAX_SPEED, START_SPEED + this.score * SPEED_PER_POINT);
+    this.music.setTempo(1 + ((this.roadSpeed - START_SPEED) / (MAX_SPEED - START_SPEED)) * 0.25);
     const gapTime = Math.max(0.55, 0.9 - this.score * 0.01);
     const drift = Math.min(4 + this.score * 0.25, 12);
 
@@ -1352,6 +1717,7 @@ class Game {
         break;
     }
     ctx.restore();
+    drawSoundButton(ctx, this.music.isMuted);
   }
 
   private renderWorld(withBark: boolean): void {
@@ -1400,7 +1766,7 @@ class Game {
     ctx.fillStyle = 'rgba(10,18,40,0.55)';
     ctx.fillRect(0, 0, BASE_W, BASE_H);
 
-    drawText(ctx, 'El Juego de Tobby', BASE_W / 2, 42, 30, C.gold, { stroke: C.ink, strokeWidth: 6 });
+    drawText(ctx, 'El Juego de Tobby', BASE_W / 2, 52, 30, C.gold, { stroke: C.ink, strokeWidth: 6 });
 
     drawTobbyPortrait(ctx, BASE_W / 2, 132, 1.05, this.time);
 
@@ -1516,10 +1882,16 @@ function bootstrap(): void {
   window.addEventListener('orientationchange', viewport.resize);
   window.visualViewport?.addEventListener('resize', viewport.resize);
 
-  const game = new Game(ctx);
+  const music = new ChristmasMusic();
+  const game = new Game(ctx, music);
   new InputController(viewport, {
-    onPress: () => game.handlePress(),
+    onPress: (x, y) => game.handlePress(x, y),
     onAction: (action) => game.handleAction(action),
+    onUserGesture: () => music.unlock(),
+    onToggleMute: () => {
+      music.unlock();
+      music.toggleMute();
+    },
   });
   game.start();
 }
